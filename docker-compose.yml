@@ -1,12 +1,21 @@
+version: '3.8'
+
 services:
   model_auto_switch:
-    image: ghcr.io/luler/model_auto_switch:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+        - linux/amd64
+    image: model_auto_switch:local
+    container_name: model_auto_switch
     restart: always
     ports:
-      - 20261:3000
+      - "20261:3000"
     volumes:
       - ./runtime:/app/runtime
-      - ./app/appconfig/openai_proxy.yaml:/app/app/appconfig/openai_proxy.yaml
+      - ./app/appconfig/openai_proxy.yaml:/app/app/appconfig/openai_proxy.yaml:ro
     environment:
-      - TZ=${TZ:-Asia/Shanghai}                         #时区
-      - PORT=${PORT:-3000}                              #服务端口
+      - TZ=Asia/Shanghai
+      - PORT=3000
