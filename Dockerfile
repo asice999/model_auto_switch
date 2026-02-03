@@ -1,33 +1,60 @@
-# 基于 Golang 官方镜像构建
-FROM golang:1.21.0-alpine3.18 AS builder
+# 多阶段构建 - 支持 AMD64 和 ARM64
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 
-# 设置工作目录
 WORKDIR /app
 
-# 将本地应用代码复制到容器内的工作目录
-COPY . .
+# 安装构建依赖
+RUN apk add --no-cache git ca-certificates tzdata
 
-#安装CA证书（需要请求第三方https接口）、设置代理、安装依赖、构建二进制文件
-#-ldflags="-s -w":-s：省略符号表,-w：省略 DWARF 调试信息, 可进一步缩小编译后的二进制文件体积
-#CGO_ENABLED=0: 强制禁用CGO，二进制文件将包含所有依赖的代码，不依赖外部动态库,允许使用 scratch 空镜像
-#使用upx压缩可执行程序，能够减少程序包50%左右的体积，但会增加启动速度，需要权衡
-RUN apk add --no-cache ca-certificates upx && \
-    go env -w GOPROXY=https://goproxy.cn,direct && \
-    go mod download && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /app/main . && \
-    upx --best --lzma /app/main
+# 克隆源代码（使用官方仓库）
+RUN git clone --depth 1 https://github.com/luler/model_auto_switch.git .
 
-# 运行阶段
-FROM scratch
+# 下载依赖
+RUN go mod download
+
+# 构建参数
+ARG TARGETOS
+ARG TARGETARCH
+ARG BUILD_DATE
+ARG VCS_REF
+
+# 构建二进制文件（静态链接，无 CGO）
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w \
+    -X main.buildDate=${BUILD_DATE} \
+    -X main.gitCommit=${VCS_REF}" \
+    -o model_auto_switch .
+
+# 运行阶段 - 使用最小化基础镜像
+FROM --platform=$TARGETPLATFORM alpine:3.19
+
 WORKDIR /app
-#复制必要文件到镜像里面
-COPY . .
-#复制CA证书
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-#复制主程序
-COPY --from=builder /app/main .
 
-#设置容器暴露端口
+# 安装运行时依赖
+RUN apk --no-cache add ca-certificates tzdata curl && \
+    adduser -D -s /bin/sh appuser
+
+# 从构建阶段复制二进制文件
+COPY --from=builder /app/model_auto_switch .
+
+# 创建必要的目录并设置权限
+RUN mkdir -p /app/app/appconfig /app/runtime && \
+    chown -R appuser:appuser /app
+
+# 切换到非 root 用户
+USER appuser
+
+# 暴露端口
 EXPOSE 3000
 
-CMD ["./main","serve"]
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/v1/models || exit 1
+
+# 设置环境变量
+ENV TZ=Asia/Shanghai \
+    PORT=3000 \
+    GIN_MODE=release
+
+# 启动命令
+ENTRYPOINT ["./model_auto_switch"]
